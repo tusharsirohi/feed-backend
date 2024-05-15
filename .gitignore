@@ -1,2 +1,4 @@
 violation_frame_*.jpg
 __pycache__/
+ENV/
+model.py
