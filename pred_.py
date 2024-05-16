@@ -44,7 +44,9 @@ client.connect(broker_address, broker_port, keepalive=120)
 zone_location_map = {
     'Zone_1': 'Zone_1',
     'Zone_2': 'Zone_2',
-    'Zone_3': 'Zone_3'
+    'Zone_3': 'Zone_3',
+    'Zone_4': 'Zone_4',
+    'Zone_5': 'Zone_5',
 }
 
 violation_states = {}
@@ -68,8 +70,8 @@ def start_fire_detection():
 
 @app.route('/ppe', methods=['GET'])
 def start_ppe_detection():
-    video_path = 'Construction.mp4'
-    mqtt_topic = "Zone_1"
+    video_path = 'Hardhat.mp4'
+    mqtt_topic = "Zone_4"
     model = model_
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -80,9 +82,9 @@ def start_ppe_detection():
 
 @app.route('/all', methods=['GET'])
 def start_all_detection():
-    video_paths = ['Construction.mp4', 'dalma_400240.mp4', 'ppe.mp4']
-    models = [model_, model1, model_]
-    mqtt_topics = ["Zone_1", "Zone_2", "Zone_3"]
+    video_paths = ['Construction.mp4', 'dalma_400240.mp4', 'ppe.mp4','Hardhat.mp4','oilrig.mp4']
+    models = [model_, model1, model_,model_,model_]
+    mqtt_topics = ["Zone_1", "Zone_2", "Zone_3", "Zone_4", "Zone_5"]
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
         futures = []
@@ -95,6 +97,33 @@ def start_all_detection():
             future.result()
 
     return jsonify({"message": "All detections started"}), 200
+
+def send_notification(frame, title, mqtt_topic, confidence, result, filtered_boxes=None):
+    if filtered_boxes:
+        result.boxes = filtered_boxes
+        annotated_frame = result.plot()
+    else:
+        annotated_frame = frame
+
+    (flag, img) = cv2.imencode('.jpg', annotated_frame)
+    jpg_as_text = base64.b64encode(img)
+    ts = datetime.datetime.now()
+    client.publish(violation_mqtt_topic, json.dumps({
+        'thumbnail': jpg_as_text.decode('utf-8'),
+        'ts': ts.strftime("%Y-%m-%dT%H:%M:%S"),
+        'location': zone_location_map.get(mqtt_topic, 'Unknown Location'),
+        'title': title
+    }))
+    query = """
+        INSERT INTO violations (incident_name, time, location)
+        VALUES (%(incident_name)s, %(time)s, %(location)s)
+    """
+    cur.execute(query, {
+        'incident_name': title,
+        'time': ts,
+        'location': mqtt_topic
+    })
+    connection.commit()
 
 def start_inferring(video_path, mqtt_topic, model, type=None):
     global cur, violation_states
@@ -140,10 +169,10 @@ def start_inferring(video_path, mqtt_topic, model, type=None):
 
                                 if not current_state['active'] and confidence > 0.5:
                                     current_state['active'] = True
-                                    send_notification(frame, 'Started violation ' + res.names[violation_class] + ' with Confi ' + str(round(confidence, 2)), mqtt_topic, confidence, results[0])
+                                    send_notification(frame, 'Started violation ' + res.names[violation_class] + ' with Confi ' + str(round(confidence, 2)), mqtt_topic, confidence, results[0], filtered_boxes)
                                 elif current_state['active'] and confidence < 0.3:
                                     current_state['active'] = False
-                                    send_notification(frame, 'Stopped violation ' + res.names[violation_class] + ' with Confi ' + str(round(confidence, 2)), mqtt_topic, confidence, results[0])
+                                    send_notification(frame, 'Stopped violation ' + res.names[violation_class] + ' with Confi ' + str(round(confidence, 2)), mqtt_topic, confidence, results[0], filtered_boxes)
 
                                 current_state['last_confidence'] = confidence
 
@@ -167,27 +196,6 @@ def start_inferring(video_path, mqtt_topic, model, type=None):
         cap.release()
     except Exception as e:
         logger.error(f"Exception for {mqtt_topic} with thread ID {thread_id}: {e}")
-
-def send_notification(frame, title, mqtt_topic, confidence, result):
-    (flag, img) = cv2.imencode('.jpg', result.plot() if result.boxes else frame)
-    jpg_as_text = base64.b64encode(img)
-    ts = datetime.datetime.now()
-    client.publish(violation_mqtt_topic, json.dumps({
-        'thumbnail': jpg_as_text.decode('utf-8'),
-        'ts': ts.strftime("%Y-%m-%dT%H:%M:%S"),
-        'location': zone_location_map.get(mqtt_topic, 'Unknown Location'),
-        'title': title
-    }))
-    query = """
-        INSERT INTO violations (incident_name, time, location)
-        VALUES (%(incident_name)s, %(time)s, %(location)s)
-    """
-    cur.execute(query, {
-        'incident_name': title,
-        'time': ts,
-        'location': mqtt_topic
-    })
-    connection.commit()
 
 def keep_alive():
     while True:
