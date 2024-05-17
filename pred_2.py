@@ -28,10 +28,8 @@ connection = psycopg2.connect(
 cur = connection.cursor()
 
 model = YOLO('PPE_detection.pt')
-#{0: 'Protective Helmet', 1: 'Shield', 2: 'Jacket', 3: 'Dust Mask', 4: 'Eye Wear', 5: 'Glove', 6: 'Protective Boots'}
 model1 = YOLO('Fire_detection.pt')
 model_ = YOLO('best.pt')
-#{0: 'Hardhat', 1: 'Mask', 2: 'NO-Hardhat', 3: 'NO-Mask', 4: 'NO-Safety Vest', 5: 'Person', 6: 'Safety Cone', 7: 'Safety Vest', 8: 'machinery', 9: 'vehicle'}
 
 violation_list_ = [2, 4]
 violation_mqtt_topic = "violation"
@@ -61,12 +59,11 @@ def generate_random_id(length=8):
 @app.route('/fire', methods=['GET'])
 def start_fire_detection():
     video_path = 'dalma_400240.mp4'
-    mqtt_topic = "Zone_1"
+    mqtt_topic = "Zone_2"
     model = model1
-    violation_list = [0] 
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
-        future = executor.submit(start_inferring, video_path, mqtt_topic, model, violation_list, 'fire')
+        future = executor.submit(start_inferring, video_path, mqtt_topic, model, 'fire')
         future.result()
 
     return jsonify({"message": "Fire detection started"}), 200
@@ -76,25 +73,24 @@ def start_ppe_detection():
     video_path = 'Hardhat.mp4'
     mqtt_topic = "Zone_4"
     model = model_
-    violation_list = [2, 4] 
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
-        future = executor.submit(start_inferring, video_path, mqtt_topic, model, violation_list)
+        future = executor.submit(start_inferring, video_path, mqtt_topic, model)
         future.result()
 
     return jsonify({"message": "PPE detection started"}), 200
 
 @app.route('/all', methods=['GET'])
 def start_all_detection():
-    video_paths = ['dalma_400240.mp4', 'Construction.mp4', 'ppe.mp4','Hardhat.mp4','oilrig.mp4']
-    models = [model1, model_, model_,model_,model_]
+    video_paths = ['Construction.mp4', 'dalma_400240.mp4', 'ppe.mp4','Hardhat.mp4','oilrig.mp4']
+    models = [model_, model1, model_,model_,model_]
     mqtt_topics = ["Zone_1", "Zone_2", "Zone_3", "Zone_4", "Zone_5"]
-    violation_lists = [[0], [2, 4], [2, 4], [2, 4], [2, 4]]
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
         futures = []
-        for video_path, model, mqtt_topic, violation_list in zip(video_paths, models, mqtt_topics, violation_lists):
-            future = executor.submit(start_inferring, video_path, mqtt_topic, model, violation_list)
+        for video_path, model, mqtt_topic in zip(video_paths, models, mqtt_topics):
+            type_param = 'fire' if mqtt_topic == "Zone_2" else None
+            future = executor.submit(start_inferring, video_path, mqtt_topic, model, type_param)
             futures.append(future)
 
         for future in futures:
@@ -102,7 +98,7 @@ def start_all_detection():
 
     return jsonify({"message": "All detections started"}), 200
 
-def send_notification(frame, title, mqtt_topic, confidence, result, filtered_boxes=None):
+def send_notification(frame, titles, mqtt_topic, confidence, result, filtered_boxes=None):
     if filtered_boxes:
         result.boxes = filtered_boxes
         annotated_frame = result.plot()
@@ -116,28 +112,28 @@ def send_notification(frame, title, mqtt_topic, confidence, result, filtered_box
         'thumbnail': jpg_as_text.decode('utf-8'),
         'ts': ts.strftime("%Y-%m-%dT%H:%M:%S"),
         'location': zone_location_map.get(mqtt_topic, 'Unknown Location'),
-        'title': title
+        'title': titles
     }))
     query = """
         INSERT INTO violations (incident_name, time, location)
         VALUES (%(incident_name)s, %(time)s, %(location)s)
     """
     cur.execute(query, {
-        'incident_name': title,
+        'incident_name': titles,
         'time': ts,
         'location': mqtt_topic
     })
     connection.commit()
 
-def start_inferring(video_path, mqtt_topic, model, violation_list, type=None):
-    global cur, violation_states
+def start_inferring(video_path, mqtt_topic, model, type=None):
+    global cur, violation_states, last_violation_time, initial_violation_detected
     thread_id = generate_random_id()
     threading.current_thread().name = f"Thread-{mqtt_topic}-{thread_id}"
 
-    # if type == 'fire':
-    #     violation_list = [0]
-    # else:
-    #     violation_list = violation_list_
+    if type == 'fire':
+        violation_list = [0]
+    else:
+        violation_list = violation_list_
 
     try:
         cap = cv2.VideoCapture(video_path)
@@ -156,8 +152,9 @@ def start_inferring(video_path, mqtt_topic, model, violation_list, type=None):
                     continue
 
                 results = model(frame)
-
+                    #zone specific notification must be checked for old violation 
                 filtered_boxes = []
+                current_violations = []
                 for res in results:
                     if res.boxes:
                         for box in res.boxes:
@@ -165,23 +162,42 @@ def start_inferring(video_path, mqtt_topic, model, violation_list, type=None):
                             confidence = box.conf.cpu().item()
                             if violation_class in violation_list:
                                 filtered_boxes.append(box)
+                                current_violations.append((res.names[violation_class], confidence))
 
                                 if violation_class not in violation_states:
-                                    violation_states[violation_class] = {'active': False, 'last_confidence': 0.0}
+                                    violation_states[violation_class] = {'active': False, 'last_confidence': 0.0, 'last_notification_time': datetime.datetime.min}
 
                                 current_state = violation_states[violation_class]
 
+                                current_time = datetime.datetime.now()
+                                time_diff = (current_time - current_state['last_notification_time']).total_seconds()
+
                                 if not current_state['active'] and confidence > 0.5:
-                                    current_state['active'] = True
-                                    send_notification(frame, 'Started violation ' + res.names[violation_class] + ' with Confi ' + str(round(confidence, 2)), mqtt_topic, confidence, results[0], filtered_boxes)
-                                elif current_state['active'] and confidence < 0.3:
+                                    if time_diff > 1:
+                                        current_state['active'] = True
+                                        current_state['last_notification_time'] = current_time
+                                        send_notification(frame, 'Started violation ' + res.names[violation_class] + ' with Confi ' + str(round(confidence, 2)), mqtt_topic, confidence, results[0], filtered_boxes)
+                                elif current_state['active'] and confidence < 0.1:
                                     current_state['active'] = False
+                                    current_state['last_notification_time'] = current_time
                                     send_notification(frame, 'Stopped violation ' + res.names[violation_class] + ' with Confi ' + str(round(confidence, 2)), mqtt_topic, confidence, results[0], filtered_boxes)
 
                                 current_state['last_confidence'] = confidence
 
+                if current_violations:
+                    initial_violation_detected = True
+                    last_violation_time = datetime.datetime.now()
+                    titles = ', '.join([f"{name} with Confi {round(conf, 2)}" for name, conf in current_violations])
+                    # send_notification(frame, titles, mqtt_topic, max([conf for _, conf in current_violations]), results[0], filtered_boxes)
+                else:
+                    if initial_violation_detected and (datetime.datetime.now() - last_violation_time).total_seconds() > 2:
+                        send_notification(frame, "No violations", mqtt_topic, 0, results[0])
+                        initial_violation_detected = False
+
                 if filtered_boxes:
                     results[0].boxes = filtered_boxes
+                    filtered_boxes = []
+
                     annotated_frame = results[0].plot()
                 else:
                     annotated_frame = frame
@@ -199,10 +215,11 @@ def start_inferring(video_path, mqtt_topic, model, violation_list, type=None):
     except Exception as e:
         logger.error(f"Exception for {mqtt_topic} with thread ID {thread_id}: {e}")
 
+
 def keep_alive():
     while True:
         client.publish("keepalive", "ping")
-        time.sleep(115)
+        time.sleep(30)
 
 if __name__ == '__main__':
     keep_alive_thread = threading.Thread(target=keep_alive)
