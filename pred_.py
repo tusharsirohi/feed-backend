@@ -1,4 +1,5 @@
 import cv2
+from numpy import half
 from ultralytics import YOLO
 from notification import MQTT
 import paho.mqtt.client as mqtt
@@ -65,7 +66,7 @@ def start_fire_detection():
     model = model1
     violation_list = [0] 
 
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         future = executor.submit(start_inferring, video_path, mqtt_topic, model, violation_list, 'fire')
         future.result()
 
@@ -78,7 +79,7 @@ def start_ppe_detection():
     model = model_
     violation_list = [2, 4] 
 
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         future = executor.submit(start_inferring, video_path, mqtt_topic, model, violation_list)
         future.result()
 
@@ -91,7 +92,7 @@ def start_all_detection():
     mqtt_topics = ["Zone_1", "Zone_2", "Zone_3", "Zone_4", "Zone_5"]
     violation_lists = [[0], [2, 4], [2, 4], [2, 4], [2, 4]]
 
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         futures = []
         for video_path, model, mqtt_topic, violation_list in zip(video_paths, models, mqtt_topics, violation_lists):
             future = executor.submit(start_inferring, video_path, mqtt_topic, model, violation_list)
@@ -150,7 +151,7 @@ def start_inferring(video_path, mqtt_topic, model, violation_list, type=None):
             iteration_counter += 1
 
             if success:
-                frame = cv2.resize(frame, (640, 480))
+                frame = cv2.resize(frame, (320, 240))#640, 480
 
                 if iteration_counter % 10 != 0:
                     continue

@@ -174,25 +174,12 @@ def start_inferring(video_path, mqtt_topic, model, violation_list, type=None):
                         for box in res.boxes:
                             violation_class = box.cls.cpu().item()
                             confidence = box.conf.cpu().item()
-                            if violation_class in violation_list and confidence >= 0.2:
+                            if violation_class in violation_list and confidence >= 0.20:
                                 frame_violations.append({
                                     'violation_class': violation_class,
                                     'confidence': confidence,
                                     'box': box
                                 })
-                    
-                violation_counts = {}
-                for violation in frame_violations:
-                    cls_name = res.names[violation['violation_class']]
-                    if cls_name not in violation_counts:
-                        violation_counts[cls_name] = 0
-                    violation_counts[cls_name] += 1
-
-                
-                violation_info = [f"{cls_name}-{count}" for cls_name, count in violation_counts.items()]
-
-                for info in violation_info:
-                    print(info)
 
                 if frame_violations:
                     consolidated_violations.append(frame_violations)
@@ -217,8 +204,8 @@ def start_inferring(video_path, mqtt_topic, model, violation_list, type=None):
 
                         if not current_state['active'] and confidence > 0.5:
                             current_state['active'] = True
-                            notification_queue.put((frame, f'Started violation {results[0].names[violation_class]} with Confi {round(confidence, 2)} {str(violation_info)}' , mqtt_topic, confidence, results[0], filtered_boxes))
-                        elif current_state['active'] and confidence < 0.25:
+                            notification_queue.put((frame, f'Started violation {results[0].names[violation_class]} with Confi {round(confidence, 2)}', mqtt_topic, confidence, results[0], filtered_boxes))
+                        elif current_state['active'] and confidence < 0.30:
                             current_state['active'] = False
                             notification_queue.put((frame, f'Stopped violation {results[0].names[violation_class]} with Confi {round(confidence, 2)}', mqtt_topic, confidence, results[0], filtered_boxes))
 
